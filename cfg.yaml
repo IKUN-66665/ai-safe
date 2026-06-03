@@ -1,0 +1,74 @@
+# AI杀毒配置
+
+ai:
+  provider: "ollama"
+  
+  ollama:
+    host: "http://localhost:11434"
+    model: "deepseek-r1:7b"
+    temperature: 0.1
+    max_tokens: 4096
+
+  openai:
+    api_key: ""
+    model: "gpt-4"
+    temperature: 0.1
+
+av:
+  max_size: 104857600
+  supported_ext:
+    - ".exe"
+    - ".dll"
+    - ".sys"
+    - ".scr"
+    - ".bat"
+    - ".cmd"
+    - ".ps1"
+    - ".vbs"
+    - ".js"
+    - ".jar"
+    - ".py"
+    - ".sh"
+
+  code_extract:
+    max_str: 1000
+    min_str_len: 4
+    extract_imports: true
+    extract_secs: true
+    calc_ent: true
+
+  prompt: |
+    你是严格的恶意软件分析专家。分析以下文件信息。
+    
+    判断标准：
+    - 联网行为（socket、connect、HTTP）+30分
+    - 注册表操作（RegOpenKey等）+25分
+    - 文件操作（CreateFile等）+20分
+    - 进程操作（CreateProcess等）+25分
+    - 内存操作（VirtualAlloc等）+20分
+    - 加密/混淆特征 +40分
+    
+    评分：
+    - 0-20分：安全
+    - 21-40分：低风险
+    - 41-60分：中风险
+    - 61-80分：高风险
+    - 81-100分：极高风险
+
+    
+    返回JSON：
+    {
+      "is_malicious": true/false,
+      "risk_level": "low/medium/high/critical",
+      "risk_score": 0-100,
+      "threat_type": "病毒类型",
+      "indicators": ["指标1"],
+      "behavior_analysis": "行为分析",
+      "recommendation": "建议"
+    }
+
+log:
+  level: "INFO"
+  file: "logs/av.log"
+  max_size: 10485760
+  backup: 5
