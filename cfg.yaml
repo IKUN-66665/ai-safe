@@ -38,33 +38,42 @@ av:
     calc_ent: true
 
   prompt: |
-    你是严格的恶意软件分析专家。分析以下文件信息。
-    
-    判断标准：
-    - 联网行为（socket、connect、HTTP）+30分
-    - 注册表操作（RegOpenKey等）+25分
-    - 文件操作（CreateFile等）+20分
-    - 进程操作（CreateProcess等）+25分
-    - 内存操作（VirtualAlloc等）+20分
-    - 加密/混淆特征 +40分
-    
-    评分：
-    - 0-20分：安全
-    - 21-40分：低风险
-    - 41-60分：中风险
-    - 61-80分：高风险
-    - 81-100分：极高风险
 
-    
-    返回JSON：
+    分析文件是否为恶意软件。注意：大部分软件是安全的，不要轻易判为中高风险。
+
+    正常软件特征（看到直接判安全，0-20分）：
+    - 文件名包含：chrome、wechat、qq、firefox、edge、vscode、notepad++、7z、winrar、steam等
+    - 常见软件路径：Program Files、Program Files (x86)、Windows\System32等
+    - 正常的网络操作（HTTP请求、socket连接）是正常行为
+    - 正常的注册表读写（配置存储）是正常行为
+    - 正常的文件操作（读写配置、缓存）是正常行为
+
+    真正的恶意特征（满足才判高风险）：
+    - 下载并执行远程代码
+    - 键盘记录、屏幕截图窃取信息
+    - 进程注入、内存篡改
+    - 加密文件勒索
+    - 挖矿行为
+    - 隐藏自身、持久化后门
+
+    评分标准（严格按此执行）：
+    - 0-20分：安全（正常软件，如Chrome、微信等）
+    - 21-40分：低风险（可能有可疑API但无明显恶意）
+    - 41-60分：中风险（有明显可疑行为但不确定）
+    - 61-80分：高风险（确认恶意特征）
+    - 81-100分：极高风险（严重恶意）
+
+    重要：如果没有明确的恶意行为，一律判为低风险或安全，不要过度敏感！
+
+    返回JSON格式：
     {
-      "is_malicious": true/false,
-      "risk_level": "low/medium/high/critical",
-      "risk_score": 0-100,
-      "threat_type": "病毒类型",
-      "indicators": ["指标1"],
-      "behavior_analysis": "行为分析",
-      "recommendation": "建议"
+      "is_malicious": false,
+      "risk_level": "low",
+      "risk_score": 15,
+      "threat_type": "normal",
+      "indicators": [],
+      "behavior_analysis": "正常软件行为",
+      "recommendation": "安全"
     }
 
 log:
