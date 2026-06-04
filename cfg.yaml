@@ -73,7 +73,7 @@ av:
       "threat_type": "normal",
       "indicators": [],
       "behavior_analysis": "正常软件行为",
-      "recommendation": "安全"
+      "recommendation": "安全"##
     }
 
 log:
