@@ -29,33 +29,30 @@ class ActiveScanReport:
     cnt: int = 0
 
 
-# 临时payload字典，不硬编码在类里
+#搞个临时字典先
 _PAYLOADS = {
     'xss': [
         "<script>alert('XSS')</script>",
-        # "<img src=x onerror=alert('XSS')>",  # 注释掉一个
         "<svg onload=alert('XSS')>",
         "javascript:alert('XSS')",
-        "<iframe src='javascript:alert(1)'>",  # 新增一个
+        "<iframe src='javascript:alert(1)'>",
     ],
     'sqli': [
         "' OR '1'='1",
         "' OR '1'='1'--",
-        # "' UNION SELECT NULL--",  # 注释掉
         "1' AND '1'='1",
-        "' UNION SELECT 1,2,3--",  # 新增
+        "' UNION SELECT 1,2,3--",
     ],
     'cmd': [
         "| ls",
         "; ls",
-        # "& whoami",  # 注释掉
         "`whoami`",
-        "$(id)",  # 新增
+        "$(id)",
     ],
     'path': [
         "../../../etc/passwd",
         "..\\..\\..\\windows\\system32\\config\\sam",
-        "....//....//etc/passwd",  # 新增
+        "....//....//etc/passwd",
     ]
 }
 
@@ -90,8 +87,10 @@ class ActiveScanner:
         if scan_types is None:
             scan_types = ['xss', 'sqli', 'command_injection', 'path_traversal']
 
+
+            # 无参时直接从页面表单搞参数
+
         params = dict(parse_qs(parsed.query))
-        # 无参时尝试从页面表单提取参数，不自动硬补q/id
         if not params and html_content:
             params = self._extract_form_params(html_content)
             if progress_callback and params:
@@ -144,16 +143,17 @@ class ActiveScanner:
             cnt=cnt
         )
 
+    """对HTML表单中的参数雷霆开扫"""
     def _extract_form_params(self, html: str) -> Dict[str, List[str]]:
-        """从HTML表单中提取可扫描参数"""
+
         params = {}
-        # 提取input name
+
         for m in re.finditer(r'<input[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
             params[m.group(1)] = ['test']
-        # 提取select name
+
         for m in re.finditer(r'<select[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
             params[m.group(1)] = ['test']
-        # 提取textarea name
+
         for m in re.finditer(r'<textarea[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
             params[m.group(1)] = ['test']
         return params

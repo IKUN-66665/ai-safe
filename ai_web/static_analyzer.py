@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
- 静态分析器
+static_analyzer.py - 静态分析器
+基于HTML内容做静态分析，不发送攻击Payload
 """
 
 import re
@@ -25,15 +26,15 @@ class PassiveAnalysisReport:
 
 
 class PassiveAnalyzer:
-
+    """被动分析器 - 基于HTML内容做静态分析"""
 
     def __init__(self):
         pass
 
     def analyze(self, url: str, html: str) -> PassiveAnalysisReport:
+        """执行安全分析"""
 
-
-
+        # 解析URL信息
         url_info = self._parse_url(url)
 
         forms = self._parse_forms(html)
@@ -43,52 +44,52 @@ class PassiveAnalyzer:
         vulnerabilities = []
         issues = []
 
-
+        # 基础安全检查 - 未使用HTTPS
         if not url_info.is_https:
             issues.append("中危: 连接未使用HTTPS，数据传输可能被窃听")
 
-
+        # 存储型XSS检测
         stored_xss = self._detect_stored_xss(html)
         if stored_xss:
             vulnerabilities.append(stored_xss)
             issues.append(f"高危: 存储型XSS - {stored_xss['location']}")
 
-
+        # DOM型XSS检测
         dom_xss = self._detect_dom_xss(html)
         if dom_xss:
             vulnerabilities.append(dom_xss)
             issues.append(f"高危: DOM型XSS - {dom_xss['location']}")
 
-
+        # 反射型XSS检测
         reflected_xss = self._detect_reflected_xss(url)
         if reflected_xss:
             vulnerabilities.append(reflected_xss)
             issues.append(f"高危: 反射型XSS - {reflected_xss['location']}")
 
-
+        # CSRF检测
         csrf = self._detect_csrf(forms)
         if csrf:
             vulnerabilities.append(csrf)
             issues.append(f"中危: CSRF - {csrf['location']}")
 
-
+        # Cookie安全检测
         cookie_issues = self._detect_cookie_issues(html)
         for issue in cookie_issues:
             vulnerabilities.append(issue)
             issues.append(f"低危: Cookie安全 - {issue['location']}")
 
-
+        # 信息泄露检测
         info_leak = self._detect_info_leak(html)
         if info_leak:
             vulnerabilities.append(info_leak)
             issues.append(f"低危: 信息泄露 - {info_leak['location']}")
 
-
+        # JS安全风险检测
         js_risks = self._detect_js_risks(scripts)
         for risk in js_risks:
             issues.append(risk)
 
-
+        # 计算风险评分
         risk_score = self._calc_risk_score(vulnerabilities, issues)
         risk_level = self._get_risk_level(risk_score)
 
@@ -105,7 +106,7 @@ class PassiveAnalyzer:
         )
 
     def _parse_url(self, url: str) -> URLInfo:
-
+        """解析URL"""
         try:
             parsed = urlparse(url)
             is_ip = bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', parsed.netloc))
@@ -147,7 +148,7 @@ class PassiveAnalyzer:
         return forms
 
     def _parse_scripts(self, html: str) -> List[ScriptInfo]:
-
+        """解析脚本"""
         scripts = []
         script_pattern = r'<script[^>]*>(.*?)</script>'
 
@@ -170,7 +171,7 @@ class PassiveAnalyzer:
         return scripts
 
     def _detect_stored_xss(self, html: str) -> Optional[Dict]:
-
+        """检测存储型XSS"""
         user_sources = [
             r'location\.\w+',
             r'document\.\w+',
@@ -179,7 +180,7 @@ class PassiveAnalyzer:
             r'sessionStorage',
         ]
 
-
+        # 检测innerHTML/document.write且包含用户输入源
         dangerous_patterns = [
             (r'\.innerHTML\s*=\s*[^;]*(?:' + '|'.join(user_sources) + r')', 'innerHTML赋值'),
             (r'document\.write\s*\(\s*[^)]*(?:' + '|'.join(user_sources) + r')', 'document.write'),
@@ -197,14 +198,14 @@ class PassiveAnalyzer:
         return None
 
     def _detect_dom_xss(self, html: str) -> Optional[Dict]:
-
+        """检测DOM型XSS"""
         sources = ['location.href', 'location.search', 'location.hash',
                    'document.URL', 'document.documentURI', 'document.baseURI']
         sinks = ['eval', 'innerHTML', 'outerHTML', 'document.write', 'setTimeout', 'setInterval']
 
         for source in sources:
             for sink in sinks:
-
+                # 简化检测：检查source和sink是否在同一脚本中
                 if source in html and sink in html:
                     # 进一步检查是否有数据流
                     if re.search(rf'{re.escape(source)}.*{re.escape(sink)}', html, re.IGNORECASE | re.DOTALL):
@@ -218,7 +219,8 @@ class PassiveAnalyzer:
         return None
 
     def _detect_reflected_xss(self, url: str) -> Optional[Dict]:
-
+        """检测反射型XSS - 全部域名都检测"""
+        # 检查URL参数是否包含可疑内容
         if '?' in url:
             params = url.split('?')[1]
             xss_patterns = ['<script', 'javascript:', 'onerror=', 'onload=']
@@ -237,7 +239,8 @@ class PassiveAnalyzer:
         """检测CSRF"""
         for form in forms:
             if form.has_password and form.method == 'POST':
-
+                # 检查是否有CSRF Token
+                # 这里简化处理，实际应该检查表单HTML内容
                 return {
                     'type': 'csrf',
                     'severity': '中危',
@@ -248,12 +251,12 @@ class PassiveAnalyzer:
         return None
 
     def _detect_cookie_issues(self, html: str) -> List[Dict]:
-
+        """检测Cookie安全问题"""
         issues = []
         return issues
 
     def _detect_info_leak(self, html: str) -> Optional[Dict]:
-
+        """检测信息泄露"""
         email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
         phone_pattern = r'1[3-9]\d{9}'
 
@@ -273,7 +276,7 @@ class PassiveAnalyzer:
 
 
     def _detect_js_risks(self, scripts: List[ScriptInfo]) -> List[str]:
-
+        """检测JS中的潜在风险"""
         risks = []
         for s in scripts:
             if s.uses_eval:
@@ -308,7 +311,7 @@ class PassiveAnalyzer:
         return min(score, 100)
 
     def _get_risk_level(self, score: int) -> str:
-
+        """获取风险等级"""
         if score >= 60:
             return '高危'
         elif score >= 30:

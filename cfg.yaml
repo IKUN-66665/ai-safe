@@ -1,8 +1,9 @@
-# AI杀毒配置
-
+# ========================
+# 全局AI配置
+# ========================
 ai:
   provider: "ollama"
-  
+
   ollama:
     host: "http://localhost:11434"
     model: "deepseek-r1:7b"
@@ -14,6 +15,9 @@ ai:
     model: "gpt-4"
     temperature: 0.1
 
+# ========================
+# 模块一：AI-Safe 文件安全检测
+# ========================
 av:
   max_size: 104857600
   supported_ext:
@@ -38,8 +42,7 @@ av:
     calc_ent: true
 
   prompt: |
-
-    分析文件是否为恶意软件。注意：大部分软件是安全的，不要轻易判为中高风险。
+    分析文件是否为恶意软件。
 
     正常软件特征（看到直接判安全，0-20分）：
     - 文件名包含：chrome、wechat、qq、firefox、edge、vscode、notepad++、7z、winrar、steam等
@@ -48,22 +51,25 @@ av:
     - 正常的注册表读写（配置存储）是正常行为
     - 正常的文件操作（读写配置、缓存）是正常行为
 
-    真正的恶意特征（满足才判高风险）：
-    - 下载并执行远程代码
+    高风险恶意特征（必须重点识别）：
+    - Fork炸弹：%0|%0、:loop goto loop 等无限递归或无限循环代码
+    - 删除或格式化系统文件（del /s /q c:\windows、format c:等）
+    - 下载并执行远程代码（powershell下载执行、Invoke-Expression等）
     - 键盘记录、屏幕截图窃取信息
     - 进程注入、内存篡改
     - 加密文件勒索
     - 挖矿行为
-    - 隐藏自身、持久化后门
+    - 隐藏自身、持久化后门（注册表自启、计划任务等）
+    - 关闭防火墙、禁用UAC等安全措施
 
     评分标准（严格按此执行）：
     - 0-20分：安全（正常软件，如Chrome、微信等）
     - 21-40分：低风险（可能有可疑API但无明显恶意）
     - 41-60分：中风险（有明显可疑行为但不确定）
     - 61-80分：高风险（确认恶意特征）
-    - 81-100分：极高风险（严重恶意）
+    - 81-100分：极高风险（严重恶意，如Fork炸弹、删除系统文件等）
 
-    重要：如果没有明确的恶意行为，一律判为低风险或安全，不要过度敏感！
+    重要：如果检测到Fork炸弹、删除系统文件、下载执行远程代码等明确恶意行为，必须直接判为极高风险！
 
     返回JSON格式：
     {
@@ -73,19 +79,15 @@ av:
       "threat_type": "normal",
       "indicators": [],
       "behavior_analysis": "正常软件行为",
-      "recommendation": "安全"##
+      "recommendation": "安全"
     }
 
-
-
-
-
-
+# ========================
+# 模块二：Web安全审计浏览器
+# ========================
 browser:
-
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0"
   timeout: 30
-
 
   passive_analysis:
     check_ssl: true
@@ -94,13 +96,10 @@ browser:
     analyze_js: true
     check_cors: true
 
-
   active_scan:
     enabled: true
-    max_requests: 50  # 最大测试请求数
-    delay: 1  # 请求间隔（秒）
-
-
+    max_requests: 50
+    delay: 1
     tests:
       - xss
       - sqli
@@ -111,10 +110,9 @@ browser:
       - idor
       - security_misconfig
 
-
   security_prompt: |
     你是一位专业的Web安全审计专家。请分析以下网站信息，评估其安全风险。
-    
+
     分析维度（OWASP Top 10）：
     1. 注入攻击（SQL注入、命令注入、XSS等）
     2. 失效的访问控制
@@ -126,7 +124,7 @@ browser:
     8. 不安全的反序列化
     9. 使用含有已知漏洞的组件
     10. 不足的日志记录和监控
-    
+
     请以JSON格式返回分析结果：
     {
       "overall_risk": "low/medium/high/critical",
@@ -144,9 +142,53 @@ browser:
       "safe_usage_guide": "安全使用建议"
     }
 
+# Web模块专用AI提示词
+prompts:
+  analyze_html_system: |
+    你是一个专业的Web安全审计专家。请分析给定的网页HTML源码，
+    找出其中可能存在的安全风险和漏洞。
+    请用中文回答，按以下格式输出：
+    1. 检测到的风险点（列出每个风险的类型、位置、说明）
+    2. 风险等级评估（高/中/低）
+    3. 修复建议
+    只输出分析结果，不要输出思考过程。
 
+  analyze_html_user: |
+    请分析以下网页的安全风险：
+
+    URL: {url}
+
+    HTML源码:
+    ```html
+    {html}
+    ```
+
+  generate_report_system: |
+    你是一个专业的Web安全审计报告撰写专家。
+    根据提供的被动分析和主动扫描结果，生成一份完整的安全审计报告。
+    请用中文回答，按以下格式输出：
+    1. 概述（目标URL、扫描概况）
+    2. 发现的安全问题（按严重程度排序）
+    3. 综合风险评估
+    4. 修复建议与优先级
+    只输出报告内容，不要输出思考过程。
+
+  generate_report_user: |
+    目标URL: {url}
+
+    === 被动分析结果 ===
+    {passive_result}
+
+    === 主动扫描结果 ===
+    {active_result}
+
+    请根据以上结果生成安全审计报告。
+
+# ========================
+# 日志配置
+# ========================
 logging:
   level: "INFO"
   file: "logs/security_suite.log"
-  max_size: 10485760  # 10MB
+  max_size: 10485760
   backup_count: 5

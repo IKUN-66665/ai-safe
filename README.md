@@ -1,6 +1,6 @@
 # AI-Safe
 
-用 PyQt6 写的文件安全检测工具，基于 Ollama 本地 AI 做语义分析。
+用 PyQt6 写的文件安全检测工具 + Web安全审计浏览器，基于 Ollama 本地 AI 做语义分析。
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![PyQt6](https://img.shields.io/badge/PyQt6-GUI-green.svg)
@@ -8,15 +8,15 @@
 
 ## 干啥用的 / What it does
 
+**模块一：文件安全检测**
 拖个文件进去，AI 分析是不是恶意软件。本地跑，不需要联网上传文件。
 
 支持的可执行文件：
 - PE 文件（exe、dll、sys、scr）
-- 脚本（bat、cmd、ps1、vbs、js、py）
+- 脚本（bat、cmd、ps1、vbs、js、py、jar、sh）
 
-Drop a file in, AI analyzes if it's malware. Runs locally, no upload needed.
-
-Supported: PE files (exe, dll, sys, scr) and scripts (bat, cmd, ps1, vbs, js, py).
+**模块二：Web安全审计浏览器（新增功能）**
+内置浏览器访问网站，自动进行被动分析和主动扫描，AI 生成安全审计报告。
 
 ## 效果 / Features
 
@@ -24,6 +24,11 @@ Supported: PE files (exe, dll, sys, scr) and scripts (bat, cmd, ps1, vbs, js, py
 - AI 语义分析风险等级 / AI semantic risk analysis
 - 静态特征提取（熵值、API、字符串）/ Static feature extraction (entropy, APIs, strings)
 - 规则匹配（PS 下载执行、注册表自启、键盘记录等）/ Rule matching (PS download, registry persistence, keylogger, etc.)
+- **Web安全审计浏览器（新增）** / Web security audit browser (new)
+  - 内置浏览器访问目标网站
+  - 被动分析（SSL、Headers、Forms、JS、CORS）
+  - 主动扫描（XSS、SQLi、命令注入等）
+  - AI 综合生成安全审计报告
 
 ## 环境 / Requirements
 
@@ -46,25 +51,39 @@ pip install -r requirements.txt
 ollama pull deepseek-r1:7b
 
 # 4. 跑起来 / Run
+# 文件安全检测
 python run_safe.py
+# Web安全审计浏览器
+python run_browser.py
 ```
 
 ## 项目结构 / Project Structure
 
 ```
 ai-safe/
-├── ai_safe/
+├── ai_safe/              # 文件安全检测模块
 │   ├── __init__.py
-│   ├── safe_gui.py          # 主界面 / Main GUI
-│   └── safe_scan.py         # 文件分析 / File analyzer
+│   ├── safe_gui.py      # 主界面 / Main GUI
+│   └── safe_scan.py     # 文件分析 / File analyzer
+├── ai_web/              # Web安全审计浏览器模块（新增）
+│   ├── __init__.py
+│   ├── main_window.py   # 浏览器主界面
+│   ├── ai_analyzer.py   # AI分析器
+│   ├── payload_scanner.py  # 主动扫描器
+│   ├── static_analyzer.py  # 被动分析器
+│   └── url_parser.py    # URL解析器
 ├── core/
-│   └── ai_interface.py      # AI 接口 / AI interface
-├── cfg.yaml                 # 配置 / Config
-├── run_safe.py              # 启动入口 / Entry point
+│   ├── ai_interface.py  # AI 接口 / AI interface
+│   └── web_interface.py # Web AI 接口 / Web AI interface
+├── cfg.yaml             # 配置 / Config
+├── run_safe.py          # 文件检测入口 / File scan entry
+├── run_browser.py       # 浏览器入口 / Browser entry
 └── README.md
 ```
 
 ## 使用 / Usage
+
+### 文件安全检测
 
 | 步骤 | 截图 |
 | ---- | ---- |
@@ -76,7 +95,19 @@ ai-safe/
 2. 拖文件进去或点"选文件" / Drag file or click "Select File"
 3. 等分析完看评分和报告 / Wait for analysis and view report
 
+### Web安全审计浏览器（新增功能）
 
+| 步骤 | 截图 | 说明 |
+| ---- | ---- | ---- |
+| 1. 打开浏览器访问目标网站 / Open browser | ![Step 5](5.png) | 输入URL，右侧会自主分析当前页面 |
+| 2. 被动分析 / Passive analysis | ![Step 6](6.png) | 自动检测SSL、Headers、Forms、JS、CORS |
+| 3. AI综合分析 / AI analysis | ![Step 4](4.png) | AI综合生成完整安全审计报告 |
+
+1. 启动浏览器模块 / Launch browser module
+2. 输入目标URL并访问 / Enter target URL and visit
+3. 查看实时页面分析结果 / View real-time page analysis
+4. 点击"被动分析"获取详细信息 / Click "Passive Analysis" for details
+5. 点击"AI分析"获取综合安全报告 / Click "AI Analysis" for full report
 
 ## 技术栈 / Tech Stack
 
@@ -84,6 +115,7 @@ ai-safe/
 - PyQt6
 - Ollama（deepseek-r1:7b）
 - pefile
+- PyQtWebEngine
 
 ## 免责 / Disclaimer
 
@@ -91,6 +123,8 @@ ai-safe/
 
 For educational purposes only. Do not use as production security tool. AI analysis may produce false positives.
 
-## License
+## 更新日志
 
-MIT
+### 2026-06-07
+- 新增：Web安全审计浏览器模块，支持内置浏览器访问目标网站、被动分析、AI综合生成安全报告
+- 修复：杀毒模块新增Fork炸弹、删除系统文件、关闭防火墙等多个恶意规则检测，提升对危险脚本的识别能力
