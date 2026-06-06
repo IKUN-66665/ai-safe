@@ -76,8 +76,77 @@ av:
       "recommendation": "安全"##
     }
 
-log:
+
+
+
+
+
+browser:
+
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0"
+  timeout: 30
+
+
+  passive_analysis:
+    check_ssl: true
+    analyze_headers: true
+    extract_forms: true
+    analyze_js: true
+    check_cors: true
+
+
+  active_scan:
+    enabled: true
+    max_requests: 50  # 最大测试请求数
+    delay: 1  # 请求间隔（秒）
+
+
+    tests:
+      - xss
+      - sqli
+      - command_injection
+      - path_traversal
+      - file_upload
+      - ssrf
+      - idor
+      - security_misconfig
+
+
+  security_prompt: |
+    你是一位专业的Web安全审计专家。请分析以下网站信息，评估其安全风险。
+    
+    分析维度（OWASP Top 10）：
+    1. 注入攻击（SQL注入、命令注入、XSS等）
+    2. 失效的访问控制
+    3. 敏感数据暴露
+    4. XML外部实体
+    5. 失效的身份认证
+    6. 安全配置错误
+    7. 跨站脚本（XSS）
+    8. 不安全的反序列化
+    9. 使用含有已知漏洞的组件
+    10. 不足的日志记录和监控
+    
+    请以JSON格式返回分析结果：
+    {
+      "overall_risk": "low/medium/high/critical",
+      "risk_score": 0-100,
+      "is_safe_to_use": true/false,
+      "vulnerabilities": [
+        {
+          "type": "漏洞类型",
+          "severity": "low/medium/high/critical",
+          "description": "漏洞描述",
+          "evidence": "证据"
+        }
+      ],
+      "recommendations": ["建议1", "建议2"],
+      "safe_usage_guide": "安全使用建议"
+    }
+
+
+logging:
   level: "INFO"
-  file: "logs/av.log"
-  max_size: 10485760
-  backup: 5
+  file: "logs/security_suite.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
