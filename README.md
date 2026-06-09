@@ -49,7 +49,7 @@ pip install -r requirements.txt
 # 3. 装 Ollama，下载模型 / Install Ollama & pull model
 # https://ollama.com 下载安装 / Download from https://ollama.com
 ollama pull deepseek-r1:7b
-
+#什么模型都可以 越强大的模型越好，但需要更大的内存 
 # 4. 跑起来 / Run
 # 文件安全检测
 python run_safe.py
@@ -95,11 +95,11 @@ ai-safe/
 
 ### Web安全审计浏览器（新增功能）
 
-| 步骤 | 截图 | 说明 |
-| ---- | ---- | ---- |
-| 1. 打开浏览器访问目标网站 / Open browser | ![Step 5](5.png) | 输入URL，右侧会自主分析当前页面 |
-| 2. 被动分析 / Passive analysis | ![Step 6](6.png) | 自动检测SSL、Headers、Forms、JS、CORS |
-| 3. AI综合分析 / AI analysis | ![Step 4](4.png) | AI综合生成完整安全审计报告 |
+| 步骤                            | 截图 | 说明                           |
+|-------------------------------| ---- |------------------------------|
+| 1. 打开浏览器访问目标网站 / Open browser | ![Step 5](5.png) | 输入URL，点击访问，再点击开始扫描，右侧会导出扫描结果 |
+| 2. 漏洞列表/Vulnerability List     | ![Step 6](6.png) | 点击"漏洞列表"查看详细信息 |                           |
+| 3. AI综合分析 / AI analysis       | ![Step 4](4.png) | AI综合生成完整安全审计报告               |
 
 1. 启动浏览器模块 / Launch browser module
 2. 输入目标URL并访问 / Enter target URL and visit
@@ -126,3 +126,5 @@ For educational purposes only. Do not use as production security tool. AI analys
 ### 2026-06-07
 - 新增：Web安全审计浏览器模块，支持内置浏览器访问目标网站、被动分析、AI综合生成安全报告
 - 修复：杀毒模块新增Fork炸弹、删除系统文件、关闭防火墙等多个恶意规则检测，提升对危险脚本的识别能力
+### 2026-06-10
+- 升级：更新升级web安全审计浏览器模块，可以主动分析扫描目标网站的风险，本人在dvwa靶场上测试漏洞会有反应，比之前的静态分析准确率更高
