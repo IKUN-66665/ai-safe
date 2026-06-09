@@ -1,321 +1,412 @@
-import re
+# 主动扫描器：SQL注入 / XSS / 命令注入 检测
+
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+from playwright.sync_api import sync_playwright
+import threading
 import time
-import ssl
-import urllib.request
-import urllib.error
-from typing import Optional, Dict, List, Callable, Tuple
-from dataclasses import dataclass, field
-from urllib.parse import urlparse, urlencode, parse_qs
+import re
+import json
+
+SQL_PAYLOADS = [
+    "' OR '1'='1",
+    "' OR '1'='1' --",
+    "' OR '1'='1' #",
+    "1' AND '1'='1",
+    "1' AND '1'='2",
+    "' UNION SELECT NULL--",
+    "' UNION SELECT 1,2,3--",
+    "admin' OR '1'='1",
+]
+
+XSS_PAYLOADS = [
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "\"><script>alert(1)</script>",
+    "javascript:alert(1)",
+    "<svg onload=alert(1)>",
+]
+
+SQL_ERRORS = [
+    "sql syntax", "mysql_fetch", "mysql_num", "ORA-",
+    "SQLite", "syntax error", "unclosed quotation",
+    "mysql", "postgresql", "sqlite",
+]
+
+DVWA_LOGIN_URL = "http://127.0.0.1/dvwa/login.php"
+DVWA_SECURITY_URL = "http://127.0.0.1/dvwa/security.php"
 
 
-@dataclass
-class Vulnerability:
-    name: str
-    vuln_type: str
-    severity: str
-    location: str
-    description: str
-    remediation: str
-    owasp_category: str
-    evidence: str = ""
-
-
-@dataclass
-class ActiveScanReport:
-    url: str
-    vulnerabilities: List[Vulnerability] = field(default_factory=list)
-    scan_time: float = 0.0
-    risk_level: str = "低"
-    cnt: int = 0
-
-
-#搞个临时字典先
-_PAYLOADS = {
-    'xss': [
-        "<script>alert('XSS')</script>",
-        "<svg onload=alert('XSS')>",
-        "javascript:alert('XSS')",
-        "<iframe src='javascript:alert(1)'>",
-    ],
-    'sqli': [
-        "' OR '1'='1",
-        "' OR '1'='1'--",
-        "1' AND '1'='1",
-        "' UNION SELECT 1,2,3--",
-    ],
-    'cmd': [
-        "| ls",
-        "; ls",
-        "`whoami`",
-        "$(id)",
-    ],
-    'path': [
-        "../../../etc/passwd",
-        "..\\..\\..\\windows\\system32\\config\\sam",
-        "....//....//etc/passwd",
-    ]
-}
-
-_OWASP_MAP = {
-    'xss': 'A03:2021',
-    'sqli': 'A03:2021',
-    'command_injection': 'A03:2021',
-    'path_traversal': 'A01:2021',
-}
+def build_target_url(base_url, form_action):
+    if not base_url.endswith("/"):
+        base_url += "/"
+    form_action = form_action.lstrip("/")
+    return urljoin(base_url, form_action)
 
 
 class ActiveScanner:
 
-    def __init__(self):
-        self._stop_flag = False
-        self.timeout = 10
-
-    def stop_scan(self):
-        self._stop_flag = True
-
-    def scan_url(self, url: str, parameters: Dict[str, str] = None,
-                 scan_types: List[str] = None,
-                 progress_callback: Callable = None,
-                 html_content: str = None) -> ActiveScanReport:
-        self._stop_flag = False
-        start_time = time.time()
-        vulnerabilities = []
-        cnt = 0
-
-        parsed = urlparse(url)
-
-        if scan_types is None:
-            scan_types = ['xss', 'sqli', 'command_injection', 'path_traversal']
+    def __init__(self, logger=None, callback=None):
+        self.logger = logger
+        self.callback = callback
+        self.running = False
+        self.session = requests.Session()
+        self.playwright = None
+        self.browser = None
+        # 收集扫描结果，给AI用
+        self.current_url = ""
+        self.found_vulns = []
+        self.scan_logs = []
 
 
-            # 无参时直接从页面表单搞参数
+    def log(self, text):
+        print(text)
+        self.scan_logs.append(text)
+        if self.logger:
+            self.logger(text)
 
-        params = dict(parse_qs(parsed.query))
-        if not params and html_content:
-            params = self._extract_form_params(html_content)
-            if progress_callback and params:
-                progress_callback(f"从页面提取到 {len(params)} 个表单参数", 5)
+    def stop(self):
+        self.running = False
+        if self.browser:
+            try:
+                self.browser.close()
+            except:
+                pass
 
-        if not params:
-            if progress_callback:
-                progress_callback("无URL参数且页面无可扫描参数，跳过参数扫描", 100)
-            return ActiveScanReport(
-                url=url, vulnerabilities=[],
-                scan_time=time.time()-start_time, risk_level="低",
-                cnt=0
-            )
+    def _report_vuln(self, vuln_type, description, payload, url):
+        self.found_vulns.append({
+            "type": vuln_type,
+            "description": description,
+            "payload": payload,
+            "url": url,
+        })
+        line = f"[!!!] {vuln_type}: {description} | Payload: {payload}"
+        self.log(line)
+        if self.callback:
+            self.callback(line)
 
-        total_scans = len(scan_types)
-        for i, scan_type in enumerate(scan_types):
-            if self._stop_flag:
-                break
 
-            progress = int((i / total_scans) * 80) + 10
-            if progress_callback:
-                progress_callback(f"正在扫描: {scan_type.upper()}", progress)
-
-            if scan_type == 'xss':
-                vulns, c = self._scan_xss(url, params)
-                vulnerabilities.extend(vulns)
-                cnt += c
-            elif scan_type == 'sqli':
-                vulns, c = self._scan_sqli(url, params)
-                vulnerabilities.extend(vulns)
-                cnt += c
-            elif scan_type == 'command_injection':
-                vulns, c = self._scan_command_injection(url, params)
-                vulnerabilities.extend(vulns)
-                cnt += c
-            elif scan_type == 'path_traversal':
-                vulns, c = self._scan_path_traversal(url, params)
-                vulnerabilities.extend(vulns)
-                cnt += c
-
-        risk_level = self._calc_risk(vulnerabilities)
-        scan_time = time.time() - start_time
-
-        if progress_callback:
-            progress_callback("扫描完成", 100)
-
-        return ActiveScanReport(
-            url=url, vulnerabilities=vulnerabilities,
-            scan_time=scan_time, risk_level=risk_level,
-            cnt=cnt
-        )
-
-    """对HTML表单中的参数雷霆开扫"""
-    def _extract_form_params(self, html: str) -> Dict[str, List[str]]:
-
-        params = {}
-
-        for m in re.finditer(r'<input[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
-            params[m.group(1)] = ['test']
-
-        for m in re.finditer(r'<select[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
-            params[m.group(1)] = ['test']
-
-        for m in re.finditer(r'<textarea[^>]*name=["\']?([^"\'>\s]+)["\']?', html, re.IGNORECASE):
-            params[m.group(1)] = ['test']
-        return params
-
-    def _scan_xss(self, url: str, params: Dict[str, List[str]]) -> Tuple[List[Vulnerability], int]:
-        vulns = []
-        c = 0
-
-        for param_name in params.keys():
-            for payload in _PAYLOADS['xss']:
-                if self._stop_flag:
-                    break
-                test_url = self._build_test_url(url, param_name, payload)
-                try:
-                    response = self._make_request(test_url)
-                    c += 1
-                    if response and payload in response:
-                        vulns.append(Vulnerability(
-                            name="跨站脚本攻击(XSS)", vuln_type="xss", severity="高危",
-                            location=f"参数: {param_name}",
-                            description=f"在参数 '{param_name}' 中发现反射型XSS漏洞",
-                            remediation="对用户输入进行严格的过滤和编码，启用CSP头",
-                            owasp_category=_OWASP_MAP['xss'], evidence=payload))
-                        break
-                except urllib.error.URLError as e:
-                    print(f"[WARN] XSS扫描请求失败: {e}")
-                except ValueError as e:
-                    print(f"[WARN] XSS扫描解码失败: {e}")
-        return vulns, c
-
-    def _scan_sqli(self, url: str, params: Dict[str, List[str]]) -> Tuple[List[Vulnerability], int]:
-        vulns = []
-        c = 0
-        sql_err = [
-            r"SQL syntax.*MySQL", r"PostgreSQL.*ERROR", r"ORA-\d{5}",
-            r"Microsoft SQL Server", r"Incorrect syntax",
-            r"mysql_fetch", r"mysql_num_rows", r"sqlite3.OperationalError"
-        ]
-
-        for param_name in params.keys():
-            for payload in _PAYLOADS['sqli']:
-                if self._stop_flag:
-                    break
-                test_url = self._build_test_url(url, param_name, payload)
-                try:
-                    response = self._make_request(test_url)
-                    c += 1
-                    if response:
-                        for pattern in sql_err:
-                            if re.search(pattern, response, re.IGNORECASE):
-                                vulns.append(Vulnerability(
-                                    name="SQL注入漏洞", vuln_type="sqli", severity="严重",
-                                    location=f"参数: {param_name}",
-                                    description=f"在参数 '{param_name}' 中发现SQL注入漏洞",
-                                    remediation="使用参数化查询或预编译语句，实施最小权限原则",
-                                    owasp_category=_OWASP_MAP['sqli'], evidence=pattern))
-                                break
-                except urllib.error.URLError as e:
-                    print(f"[WARN] SQLi扫描请求失败: {e}")
-                except ValueError as e:
-                    print(f"[WARN] SQLi扫描解码失败: {e}")
-        return vulns, c
-
-    def _scan_command_injection(self, url: str, params: Dict[str, List[str]]) -> Tuple[List[Vulnerability], int]:
-        vulns = []
-        c = 0
-
-        for param_name in params.keys():
-            for payload in _PAYLOADS['cmd']:
-                if self._stop_flag:
-                    break
-                test_url = self._build_test_url(url, param_name, payload)
-                try:
-                    response = self._make_request(test_url)
-                    c += 1
-                    cmd_indicators = ['root:x:', '/bin/bash', '/bin/sh', 'Windows']
-                    for indicator in cmd_indicators:
-                        if response and indicator in response:
-                            vulns.append(Vulnerability(
-                                name="命令注入漏洞", vuln_type="command_injection", severity="严重",
-                                location=f"参数: {param_name}",
-                                description=f"在参数 '{param_name}' 中发现命令注入漏洞",
-                                remediation="禁用系统命令执行函数，过滤特殊字符",
-                                owasp_category=_OWASP_MAP['command_injection'], evidence=payload))
-                            break
-                except urllib.error.URLError as e:
-                    print(f"[WARN] 命令注入扫描请求失败: {e}")
-                except ValueError as e:
-                    print(f"[WARN] 命令注入扫描解码失败: {e}")
-        return vulns, c
-
-    def _scan_path_traversal(self, url: str, params: Dict[str, List[str]]) -> Tuple[List[Vulnerability], int]:
-        vulns = []
-        c = 0
-
-        for param_name in params.keys():
-            for payload in _PAYLOADS['path']:
-                if self._stop_flag:
-                    break
-                test_url = self._build_test_url(url, param_name, payload)
-                try:
-                    response = self._make_request(test_url)
-                    c += 1
-                    sensitive = [r'root:.*:0:0:', r'\[boot loader\]', r'Windows\\']
-                    for pattern in sensitive:
-                        if response and re.search(pattern, response):
-                            vulns.append(Vulnerability(
-                                name="路径遍历漏洞", vuln_type="path_traversal", severity="高危",
-                                location=f"参数: {param_name}",
-                                description=f"在参数 '{param_name}' 中发现路径遍历漏洞",
-                                remediation="过滤路径遍历字符，使用安全的文件路径解析API",
-                                owasp_category=_OWASP_MAP['path_traversal'], evidence=payload))
-                            break
-                except urllib.error.URLError as e:
-                    print(f"[WARN] 路径遍历扫描请求失败: {e}")
-                except ValueError as e:
-                    print(f"[WARN] 路径遍历扫描解码失败: {e}")
-        return vulns, c
-
-    def _build_test_url(self, base_url: str, param_name: str, payload: str) -> str:
-        parsed = urlparse(base_url)
-        query_params = parse_qs(parsed.query)
-        query_params[param_name] = [payload]
-        new_query = urlencode(query_params, doseq=True)
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
-
-    def _make_request(self, url: str) -> Optional[str]:
+    def login_dvwa(self, username="admin", password="password"):
         try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            r = self.session.get(DVWA_LOGIN_URL, timeout=10)
+            soup = BeautifulSoup(r.text, "html.parser")
+            token_el = soup.find("input", {"name": "user_token"})
+            token = token_el["value"] if token_el else ""
 
-            request = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            })
+            data = {"username": username, "password": password, "Login": "Login"}
+            if token:
+                data["user_token"] = token
+            r = self.session.post(DVWA_LOGIN_URL, data=data, timeout=10)
 
-            with urllib.request.urlopen(request, timeout=self.timeout, context=ctx) as response:
-                return response.read().decode('utf-8', errors='ignore')
+            r = self.session.get(DVWA_SECURITY_URL, timeout=10)
+            soup = BeautifulSoup(r.text, "html.parser")
+            token_el = soup.find("input", {"name": "user_token"})
+            token = token_el["value"] if token_el else ""
 
-        except urllib.error.URLError as e:
-            print(f"[WARN] URL请求失败: {e}")
-            return None
-        except urllib.error.HTTPError as e:
-            print(f"[WARN] HTTP错误: {e.code}")
-            return None
-        except ssl.SSLError as e:
-            print(f"[WARN] SSL错误: {e}")
-            return None
-        except ValueError as e:
-            print(f"[WARN] 解码失败: {e}")
-            return None
+            data = {"security": "low", "seclev_submit": "Submit", "user_token": token}
+            self.session.post(DVWA_SECURITY_URL, data=data, timeout=10)
+            self.log("[+] DVWA 登录成功")
+            return True
+        except Exception as e:
+            self.log(f"[-] DVWA 登录异常: {e}")
+            return False
 
-    def _calc_risk(self, vulnerabilities: List[Vulnerability]) -> str:
-        if not vulnerabilities:
-            return "低"
-        for vuln in vulnerabilities:
-            if vuln.severity == "严重":
-                return "严重"
-        for vuln in vulnerabilities:
-            if vuln.severity == "高危":
-                return "高"
-        return "中"
+
+    def start_scan(self, url):
+        # 重置当前扫描结果
+        self.current_url = url
+        self.found_vulns = []
+        self.scan_logs = []
+        self.running = True
+
+        if "dvwa" in url.lower():
+            self.login_dvwa()
+
+        thread = threading.Thread(target=self._scan, args=(url,), daemon=True)
+        thread.start()
+
+
+    def get_results(self):
+        return {
+            "url": self.current_url,
+            "vulnerabilities": list(self.found_vulns),
+            "logs": list(self.scan_logs),
+            "vuln_count": len(self.found_vulns),
+        }
+
+
+    def _scan(self, url):
+        try:
+            self.log("[*] 开始扫描: " + url)
+            forms = self.extract_forms(url)
+            self.log(f"[+] 发现表单: {len(forms)}")
+
+            # 检测URL参数 + 表单参数
+            parsed = urlparse(url)
+            query_params = parse_qs(parsed.query)
+            self.log(f"[DEBUG] URL参数: {list(query_params.keys())}")
+
+            # 先搞SQL注入
+            self.log("[*] 正在扫描 SQL Injection")
+            if query_params:
+                self._check_sql_get(url, query_params)
+            for form in forms:
+                if not self.running:
+                    return
+                self._check_sql_form(url, form)
+
+            # 再搞：XSS
+            self.log("[*] 正在扫描 XSS")
+            self._scan_xss(url, forms, query_params)
+
+            self.log(f"[+] 扫描完成，共发现 {len(self.found_vulns)} 个漏洞")
+        except Exception as e:
+            self.log(f"[ERROR] {e}")
+
+    def extract_forms(self, url):
+        forms = []
+        try:
+            r = self.session.get(url, timeout=10)
+            soup = BeautifulSoup(r.text, "html.parser")
+            forms = soup.find_all("form")
+        except Exception as e:
+            self.log(str(e))
+        return forms
+
+    def _form_details(self, form):
+        action = form.attrs.get("action", "")
+        method = form.attrs.get("method", "get").lower()
+        inputs = []
+        for tag in form.find_all("input"):
+            inputs.append({"type": tag.attrs.get("type", "text"), "name": tag.attrs.get("name")})
+        return {"action": action, "method": method, "inputs": inputs}
+
+    # SQL 注入
+    def _check_sql_get(self, url, query_params):
+        parsed = urlparse(url)
+        for param_name in query_params:
+            if not self.running:
+                return
+            try:
+                # 先获取正常响应
+                normal_resp = self.session.get(url, timeout=10)
+                normal_len = len(normal_resp.text)
+
+                # 再构造真假payload
+                true_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1' AND '1'='1"
+                false_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1' AND '1'='2"
+
+                true_resp = self.session.get(true_url, timeout=10)
+                false_resp = self.session.get(false_url, timeout=10)
+                true_len = len(true_resp.text)
+                false_len = len(false_resp.text)
+
+                self.log(f"[DEBUG] 参数 {param_name}: 正常={normal_len} True={true_len} False={false_len}")
+
+                # 先判断响应中出现了SQL错误关键词
+                combined = (true_resp.text + false_resp.text).lower()
+                for err in SQL_ERRORS:
+                    if err.lower() in combined:
+                        self._report_vuln("SQL注入漏洞", f"URL参数 {param_name} 出现SQL错误提示",
+                                          f"1' AND '1'='1", url)
+                        return
+
+                # 再看真/假请求响应长度差异显著
+                if abs(true_len - false_len) > 20:
+                    self._report_vuln("SQL注入漏洞(Blind)",
+                                      f"URL参数 {param_name} 对真/假条件响应长度差异明显",
+                                      f"1' AND '1'='1", url)
+                    return
+
+                # 接着看OR 1=1 payload导致长度变化
+                or_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=' OR '1'='1"
+                or_resp = self.session.get(or_url, timeout=10)
+                if abs(len(or_resp.text) - normal_len) > 50:
+                    self._report_vuln("SQL注入漏洞",
+                                      f"URL参数 {param_name} 对 OR payload响应异常",
+                                      f"' OR '1'='1", url)
+                    return
+
+            except Exception as e:
+                self.log(f"[-] SQL GET 测试异常: {e}")
+                continue
+
+    def _check_sql_form(self, url, form):
+        details = self._form_details(form)
+        target_url = build_target_url(url, details["action"])
+        for input_tag in details["inputs"]:
+            if not input_tag["name"] or not self.running:
+                continue
+            param = input_tag["name"]
+
+
+            normal_data = {param: "test"}
+            try:
+                if details["method"] == "post":
+                    normal_resp = self.session.post(target_url, data=normal_data, timeout=10)
+                else:
+                    normal_resp = self.session.get(target_url, params=normal_data, timeout=10)
+                normal_len = len(normal_resp.text)
+            except:
+                normal_len = 0
+
+            for payload in SQL_PAYLOADS:
+                if not self.running:
+                    return
+                data = {param: payload}
+                try:
+                    if details["method"] == "post":
+                        r = self.session.post(target_url, data=data, timeout=10)
+                    else:
+                        r = self.session.get(target_url, params=data, timeout=10)
+
+                    for err in SQL_ERRORS:
+                        if err.lower() in r.text.lower():
+                            self._report_vuln("SQL注入漏洞", f"表单参数 {param}", payload, target_url)
+                            return
+                    if normal_len and abs(len(r.text) - normal_len) > 100:
+                        self._report_vuln("SQL注入漏洞(Blind)",
+                                          f"表单参数 {param} 响应长度异常", payload, target_url)
+                        return
+                except Exception as e:
+                    self.log(str(e))
+
+    # XSS 扫描
+    def _scan_xss(self, url, forms, query_params):
+        try:
+            self.playwright = sync_playwright().start()
+            self.browser = self.playwright.chromium.launch(headless=True)
+
+            # 先cookie传给浏览器
+            cookies = []
+            for c in self.session.cookies:
+                cookies.append({"name": c.name, "value": c.value,
+                                "domain": "127.0.0.1", "path": "/"})
+
+            # 测URL参数
+            if query_params:
+                self._check_xss_get(url, list(query_params.keys()), cookies)
+
+            # 测表单
+            for form in forms:
+                if not self.running:
+                    break
+                self._check_xss_form(url, form, cookies)
+
+            self.browser.close()
+            self.playwright.stop()
+            self.log("[+] XSS 扫描完成")
+        except Exception as e:
+            self.log(f"[-] XSS 扫描失败: {e}")
+            if self.browser:
+                try:
+                    self.browser.close()
+                except:
+                    pass
+            if self.playwright:
+                try:
+                    self.playwright.stop()
+                except:
+                    pass
+
+    def _check_xss_get(self, url, param_names, cookies):
+        parsed = urlparse(url)
+        for param in param_names:
+            if not self.running:
+                return
+            try:
+                context = self.browser.new_context()
+                if cookies:
+                    context.add_cookies(cookies)
+                page = context.new_page()
+
+                for payload in XSS_PAYLOADS:
+                    if not self.running:
+                        break
+                    triggered = False
+
+                    def on_dialog(dialog):
+                        nonlocal triggered
+                        triggered = True
+                        try:
+                            dialog.accept()
+                        except:
+                            pass
+
+                    page.once("dialog", on_dialog)
+                    test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param}={payload}"
+                    try:
+                        page.goto(test_url, wait_until="domcontentloaded", timeout=10000)
+                        page.wait_for_timeout(1500)
+                    except Exception as e:
+                        self.log(f"[-] XSS GET 超时: {e}")
+                        continue
+
+                    if triggered:
+                        self._report_vuln("XSS漏洞", f"URL参数 {param} 反射XSS", payload, test_url)
+                        break
+
+                page.close()
+                context.close()
+            except Exception as e:
+                self.log(f"[-] XSS GET 异常: {e}")
+
+    def _check_xss_form(self, url, form, cookies):
+        details = self._form_details(form)
+        target_url = build_target_url(url, details["action"])
+        try:
+            context = self.browser.new_context()
+            if cookies:
+                context.add_cookies(cookies)
+            page = context.new_page()
+
+            for input_tag in details["inputs"]:
+                if not input_tag["name"] or not self.running:
+                    continue
+                param = input_tag["name"]
+
+                for payload in XSS_PAYLOADS:
+                    if not self.running:
+                        break
+                    triggered = False
+
+                    def on_dialog(dialog):
+                        nonlocal triggered
+                        triggered = True
+                        try:
+                            dialog.accept()
+                        except:
+                            pass
+
+                    page.once("dialog", on_dialog)
+                    try:
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=10000)
+                        page.wait_for_timeout(500)
+
+                        try:
+                            page.fill(f'input[name="{param}"]', payload)
+                        except:
+                            pass
+
+                        try:
+                            page.click("input[type=submit], button[type=submit]")
+                        except:
+                            try:
+                                page.keyboard.press("Enter")
+                            except:
+                                pass
+
+                        page.wait_for_timeout(1500)
+                    except Exception as e:
+                        self.log(f"[-] XSS 表单测试异常: {e}")
+                        continue
+
+                    if triggered:
+                        self._report_vuln("XSS漏洞", f"表单参数 {param}", payload, target_url)
+                        break
+
+            page.close()
+            context.close()
+        except Exception as e:
+            self.log(f"[-] XSS 表单扫描异常: {e}")

@@ -13,7 +13,7 @@ from typing import Optional, Dict
 import yaml
 
 
-# 配置文件路径（相对于core目录的上层）
+# 配置文件路径
 _CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "cfg.yaml"

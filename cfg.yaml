@@ -1,6 +1,5 @@
-# ========================
 # 全局AI配置
-# ========================
+
 ai:
   provider: "ollama"
 
@@ -15,9 +14,8 @@ ai:
     model: "gpt-4"
     temperature: 0.1
 
-# ========================
+
 # 模块一：AI-Safe 文件安全检测
-# ========================
 av:
   max_size: 104857600
   supported_ext:
@@ -82,12 +80,16 @@ av:
       "recommendation": "安全"
     }
 
-# ========================
+
 # 模块二：Web安全审计浏览器
-# ========================
+
 browser:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0"
   timeout: 30
+
+  # DVWA 等靶场默认登录配置（可在GUI中覆盖）
+  login:
+
 
   passive_analysis:
     check_ssl: true
@@ -184,9 +186,9 @@ prompts:
 
     请根据以上结果生成安全审计报告。
 
-# ========================
+
 # 日志配置
-# ========================
+
 logging:
   level: "INFO"
   file: "logs/security_suite.log"

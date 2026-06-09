@@ -70,8 +70,6 @@ ai-safe/
 │   ├── main_window.py   # 浏览器主界面
 │   ├── ai_analyzer.py   # AI分析器
 │   ├── payload_scanner.py  # 主动扫描器
-│   ├── static_analyzer.py  # 被动分析器
-│   └── url_parser.py    # URL解析器
 ├── core/
 │   ├── ai_interface.py  # AI 接口 / AI interface
 │   └── web_interface.py # Web AI 接口 / Web AI interface
