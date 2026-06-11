@@ -1,8 +1,9 @@
 import os
 import re
 import math
+import json
 import hashlib
-import pefile
+import fnmatch
 from pathlib import Path
 
 
@@ -30,7 +31,7 @@ class FileAnalyzer:
         r'CreateObject', r'WScript\.Shell'
     ]
 
-    # 恶意规则 
+    # 恶意规则
     RULES = [
         {"name": "PS下载执行",
          "pattern": r'powershell.*-enc|Invoke-Expression.*DownloadString',
@@ -70,9 +71,102 @@ class FileAnalyzer:
          "severity": "critical", "desc": "禁用UAC", "cat": "系统修改"},
     ]
 
-    def __init__(self, max_file_size=104857600, max_strings=1000):
+    def __init__(self, max_file_size=104857600, max_strings=1000, whitelist_file=None):
         self.max_sz = max_file_size
         self.max_str = max_strings
+        # 白名单文件：扫描器同级目录下的 whitelist.json
+        if whitelist_file is None:
+            whitelist_file = Path(__file__).parent / "whitelist.json"
+        self.whitelist_file = Path(whitelist_file)
+        self.whitelist = self._load_whitelist()
+
+    def _load_whitelist(self):
+        if self.whitelist_file.exists():
+            try:
+                with open(self.whitelist_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"paths": [], "hashes": [], "names": []}
+
+    def _save_whitelist(self):
+        try:
+            self.whitelist_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.whitelist_file, 'w', encoding='utf-8') as f:
+                json.dump(self.whitelist, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def add_whitelist_path(self, path: str) -> bool:
+        path = str(Path(path).resolve())
+        if path not in self.whitelist.get("paths", []):
+            self.whitelist.setdefault("paths", []).append(path)
+            return self._save_whitelist()
+        return False
+
+    def add_whitelist_hash(self, hash_val: str) -> bool:
+        hash_val = hash_val.strip().lower()
+        if hash_val not in self.whitelist.get("hashes", []):
+            self.whitelist.setdefault("hashes", []).append(hash_val)
+            return self._save_whitelist()
+        return False
+
+    def add_whitelist_name(self, pattern: str) -> bool:
+        pattern = pattern.strip().lower()
+        if pattern not in self.whitelist.get("names", []):
+            self.whitelist.setdefault("names", []).append(pattern)
+            return self._save_whitelist()
+        return False
+
+    def get_whitelist_info(self) -> str:
+        return (f"路径: {len(self.whitelist.get('paths', []))} 条 | "
+                f"哈希: {len(self.whitelist.get('hashes', []))} 条 | "
+                f"文件名: {len(self.whitelist.get('names', []))} 条")
+
+    def is_whitelisted(self, fp) -> tuple:
+
+        p = Path(fp)
+        try:
+            resolved = str(p.resolve())
+        except Exception:
+            resolved = str(p)
+
+        # 检查路径白名单
+        for wp in self.whitelist.get("paths", []):
+            try:
+                if resolved == str(Path(wp).resolve()):
+                    return True, f"路径白名单: {wp}"
+            except Exception:
+                if resolved == wp:
+                    return True, f"路径白名单: {wp}"
+
+        # 计算哈希并检查
+        try:
+            file_size = p.stat().st_size
+            with open(p, 'rb') as f:
+                data = f.read(min(1024 * 1024, file_size))
+                md5 = hashlib.md5(data).hexdigest()
+                sha256 = hashlib.sha256(data).hexdigest()
+
+            for wh in self.whitelist.get("hashes", []):
+                wh_lower = wh.lower().strip()
+                if md5 == wh_lower or sha256 == wh_lower:
+                    return True, f"哈希白名单: {wh_lower[:16]}..."
+        except Exception:
+            pass
+
+        # 检查文件名白名单（支持*通配符）
+        fname = p.name.lower()
+        for wn in self.whitelist.get("names", []):
+            try:
+                if fnmatch.fnmatch(fname, wn.lower()):
+                    return True, f"文件名白名单: {wn}"
+            except Exception:
+                if wn.lower() in fname:
+                    return True, f"文件名白名单: {wn}"
+
+        return False, ""
 
     def analyze_file(self, fp: str) -> dict:
         fp = Path(fp)
@@ -80,9 +174,18 @@ class FileAnalyzer:
         if not fp.exists():
             return {"error": f"文件不存在: {fp}"}
 
+        # 检查白名单
+        is_white, reason = self.is_whitelisted(fp)
+        if is_white:
+            return {
+                "whitelisted": True,
+                "reason": reason,
+                "file_info": self._get_info(fp)
+            }
+
         sz = fp.stat().st_size
         if sz > self.max_sz:
-            return {"error": f"文件太大: {sz} bytes"}
+            return {"error": f"文件太大: {sz} bytes (>{self.max_sz})"}
 
         res = {
             "file_info": self._get_info(fp),
@@ -115,6 +218,71 @@ class FileAnalyzer:
 
         return res
 
+    """
+           批量扫描文件夹
+           callback用于进度通知
+           返回结果列表
+           """
+    def scan_folder(self, folder: str, extensions=None, callback=None) -> list:
+
+        if extensions is None:
+            extensions = ['.exe', '.dll', '.sys', '.scr', '.bat', '.cmd',
+                          '.ps1', '.vbs', '.js', '.jar', '.py']
+
+        folder = Path(folder)
+        if not folder.exists() or not folder.is_dir():
+            return []
+
+        # 收集所有符合扩展名的文件
+        files = []
+        for ext in extensions:
+            files.extend(folder.rglob(f"*{ext}"))
+        # 也收集无扩展名的可执行文件
+        try:
+            for fp in folder.rglob("*"):
+                if fp.is_file() and not fp.suffix and not fp.name.startswith('.'):
+                    if not any(fp.name == f.name for f in files):
+                        files.append(fp)
+        except Exception:
+            pass
+
+        total = len(files)
+        results = []
+
+        for idx, fp in enumerate(files):
+            if callback:
+                try:
+                    should_continue = callback(str(fp), idx, total, None)
+                    if should_continue is False:
+                        break
+                except Exception:
+                    pass
+
+            try:
+                # 先检查白名单
+                is_white, reason = self.is_whitelisted(fp)
+                if is_white:
+                    if callback:
+                        try:
+                            callback(str(fp), idx, total,
+                                     {"whitelisted": True, "reason": reason})
+                        except Exception:
+                            pass
+                    continue
+
+                res = self.analyze_file(str(fp))
+                results.append({"path": str(fp), "result": res})
+
+                if callback:
+                    try:
+                        callback(str(fp), idx, total, res)
+                    except Exception:
+                        pass
+            except Exception as e:
+                results.append({"path": str(fp), "result": {"error": str(e)}})
+
+        return results
+
     def _match_rules(self, data: bytes) -> list:
         matches = []
         s = data.decode('utf-8', errors='ignore')
@@ -128,28 +296,28 @@ class FileAnalyzer:
                         "description": r["desc"],
                         "category": r["cat"]
                     })
-            except:
+            except Exception:
                 continue
 
         return matches
 
     def _get_info(self, fp: Path) -> dict:
-        st = fp.stat()
-
-        # 算hash
-        hashes = {}
-        with open(fp, 'rb') as f:
-            d = f.read()
-            hashes['md5'] = hashlib.md5(d).hexdigest()
-            hashes['sha256'] = hashlib.sha256(d).hexdigest()
-
-        return {
+        info = {
             "file_name": fp.name,
             "file_path": str(fp.absolute()),
-            "file_size": st.st_size,
+            "file_size": 0,
             "file_extension": fp.suffix.lower(),
-            "hashes": hashes
+            "hashes": {"md5": "", "sha256": ""}
         }
+        try:
+            info["file_size"] = fp.stat().st_size
+            with open(fp, 'rb') as f:
+                d = f.read(min(1024 * 1024, info["file_size"]))
+                info["hashes"]["md5"] = hashlib.md5(d).hexdigest()
+                info["hashes"]["sha256"] = hashlib.sha256(d).hexdigest()
+        except Exception:
+            pass
+        return info
 
     def _get_strs(self, data: bytes, min_len=4) -> list:
         # ASCII
@@ -167,7 +335,7 @@ class FileAnalyzer:
                 d = s.decode('ascii', errors='ignore')
                 if d:
                     all_strs.append(d)
-            except:
+            except Exception:
                 pass
 
         all_strs.extend(uni_strs)
@@ -208,17 +376,15 @@ class FileAnalyzer:
     def _calc_ent(self, data: bytes) -> float:
         if not data:
             return 0.0
-
         ent = 0
         for x in range(256):
             p = float(data.count(bytes([x]))) / len(data)
             if p > 0:
                 ent += -p * math.log(p, 2)
-
         return round(ent, 2)
 
     def _is_pe(self, data: bytes) -> bool:
-        return data[:2] == b'MZ'
+        return len(data) >= 2 and data[:2] == b'MZ'
 
     def _parse_pe(self, data: bytes) -> dict:
         info = {
@@ -228,15 +394,19 @@ class FileAnalyzer:
             "entry": 0,
             "base": 0,
             "secs": [],
-            "imports": [],
-            "bad_secs": []
+            "bad_secs": [],
+            "imports": []
         }
 
         try:
+            import pefile
             pe = pefile.PE(data=data)
 
             info["is_dll"] = pe.is_dll()
-            info["is_64"] = pe.PE_TYPE == pefile.OPTIONAL_HEADER_PE_PLUS
+            try:
+                info["is_64"] = pe.PE_TYPE == pefile.OPTIONAL_HEADER_PE_PLUS
+            except Exception:
+                pass
             info["entry"] = hex(pe.OPTIONAL_HEADER.AddressOfEntryPoint)
             info["base"] = hex(pe.OPTIONAL_HEADER.ImageBase)
 
@@ -251,7 +421,7 @@ class FileAnalyzer:
                 })
 
                 # 可疑节区
-                bad_names = ['UPX', 'ASPack', '.vmp']
+                bad_names = ['UPX', 'ASPack', '.vmp', '.themida']
                 for bn in bad_names:
                     if bn.lower() in name.lower():
                         info["bad_secs"].append(name)
@@ -267,6 +437,8 @@ class FileAnalyzer:
 
             pe.close()
 
+        except ImportError:
+            info["err"] = "pefile 未安装，跳过PE分析"
         except Exception as e:
             info["err"] = str(e)
 
@@ -284,7 +456,7 @@ class FileAnalyzer:
 
         # 熵值
         if analysis.get("entropy", 0) > 7.5:
-            risks.append(f"高熵值 ({analysis['entropy']}) - 可能加密")
+            risks.append(f"高熵值 ({analysis['entropy']}) - 可能加密/加壳")
 
         # API
         apis = analysis.get("suspicious_apis", [])
@@ -309,6 +481,9 @@ class FileAnalyzer:
         if "error" in analysis:
             return f"错误: {analysis['error']}"
 
+        if analysis.get("whitelisted"):
+            return f"白名单跳过: {analysis.get('reason', 'N/A')}"
+
         lines = []
 
         fi = analysis.get("file_info", {})
@@ -317,7 +492,9 @@ class FileAnalyzer:
         lines.append("=" * 40)
         lines.append(f"名: {fi.get('file_name', 'N/A')}")
         lines.append(f"大小: {fi.get('file_size', 0)} bytes")
-        lines.append(f"MD5: {fi.get('hashes', {}).get('md5', 'N/A')}")
+        hashes = fi.get("hashes", {})
+        lines.append(f"MD5: {hashes.get('md5', 'N/A')}")
+        lines.append(f"SHA256: {hashes.get('sha256', 'N/A')}")
 
         lines.append(f"\n熵值: {analysis.get('entropy', 0)}")
 

@@ -34,6 +34,14 @@ SQL_ERRORS = [
     "mysql", "postgresql", "sqlite",
 ]
 
+# 常见靶场关键字
+HACKERLAB_DOMAINS = ["dvwa", "sqli-labs", "bWAPP", "webscarab", "dvwa.local"]
+
+# 普通商业网站响应长度差异容忍度更高（因为有广告、动态内容等）
+# 靶场页面相对静态，可以更严格
+LEN_DIFF_THRESHOLD_LOOSE = 500   # 宽松阈值（普通网站）
+LEN_DIFF_THRESHOLD_STRICT = 20    # 严格阈值（靶场）
+
 DVWA_LOGIN_URL = "http://127.0.0.1/dvwa/login.php"
 DVWA_SECURITY_URL = "http://127.0.0.1/dvwa/security.php"
 
@@ -58,6 +66,20 @@ class ActiveScanner:
         self.current_url = ""
         self.found_vulns = []
         self.scan_logs = []
+
+    def is_hackerlab(self, url):
+        """判断目标是否为靶场环境（靶场页面静态，阈值可以严格）"""
+        url_lower = url.lower()
+        for domain in HACKERLAB_DOMAINS:
+            if domain in url_lower:
+                return True
+        return False
+
+    def _get_len_threshold(self, url):
+        """根据目标类型返回合适的长度差异阈值"""
+        if self.is_hackerlab(url):
+            return LEN_DIFF_THRESHOLD_STRICT
+        return LEN_DIFF_THRESHOLD_LOOSE
 
 
     def log(self, text):
@@ -185,15 +207,16 @@ class ActiveScanner:
     # SQL 注入
     def _check_sql_get(self, url, query_params):
         parsed = urlparse(url)
+        is_target_hackerlab = self.is_hackerlab(url)
+
         for param_name in query_params:
             if not self.running:
                 return
             try:
-                # 先获取正常响应
                 normal_resp = self.session.get(url, timeout=10)
                 normal_len = len(normal_resp.text)
+                normal_status = normal_resp.status_code
 
-                # 再构造真假payload
                 true_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1' AND '1'='1"
                 false_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=1' AND '1'='2"
 
@@ -202,9 +225,8 @@ class ActiveScanner:
                 true_len = len(true_resp.text)
                 false_len = len(false_resp.text)
 
-                self.log(f"[DEBUG] 参数 {param_name}: 正常={normal_len} True={true_len} False={false_len}")
+                self.log(f"[DEBUG] 参数 {param_name}: 正常={normal_len}/{normal_status} True={true_len}/{true_resp.status_code} False={false_len}/{false_resp.status_code}")
 
-                # 先判断响应中出现了SQL错误关键词
                 combined = (true_resp.text + false_resp.text).lower()
                 for err in SQL_ERRORS:
                     if err.lower() in combined:
@@ -212,21 +234,21 @@ class ActiveScanner:
                                           f"1' AND '1'='1", url)
                         return
 
-                # 再看真/假请求响应长度差异显著
-                if abs(true_len - false_len) > 20:
-                    self._report_vuln("SQL注入漏洞(Blind)",
-                                      f"URL参数 {param_name} 对真/假条件响应长度差异明显",
-                                      f"1' AND '1'='1", url)
-                    return
+                # 只有靶场环境才使用长度差异检测
+                if is_target_hackerlab:
+                    if abs(true_len - false_len) > LEN_DIFF_THRESHOLD_STRICT:
+                        self._report_vuln("SQL注入漏洞(Blind)",
+                                          f"URL参数 {param_name} 对真/假条件响应长度差异明显",
+                                          f"1' AND '1'='1", url)
+                        return
 
-                # 接着看OR 1=1 payload导致长度变化
-                or_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=' OR '1'='1"
-                or_resp = self.session.get(or_url, timeout=10)
-                if abs(len(or_resp.text) - normal_len) > 50:
-                    self._report_vuln("SQL注入漏洞",
-                                      f"URL参数 {param_name} 对 OR payload响应异常",
-                                      f"' OR '1'='1", url)
-                    return
+                    or_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param_name}=' OR '1'='1"
+                    or_resp = self.session.get(or_url, timeout=10)
+                    if abs(len(or_resp.text) - normal_len) > LEN_DIFF_THRESHOLD_STRICT:
+                        self._report_vuln("SQL注入漏洞",
+                                          f"URL参数 {param_name} 对 OR payload响应异常",
+                                          f"' OR '1'='1", url)
+                        return
 
             except Exception as e:
                 self.log(f"[-] SQL GET 测试异常: {e}")
@@ -235,11 +257,12 @@ class ActiveScanner:
     def _check_sql_form(self, url, form):
         details = self._form_details(form)
         target_url = build_target_url(url, details["action"])
+        is_target_hackerlab = self.is_hackerlab(url)
+
         for input_tag in details["inputs"]:
             if not input_tag["name"] or not self.running:
                 continue
             param = input_tag["name"]
-
 
             normal_data = {param: "test"}
             try:
@@ -265,15 +288,130 @@ class ActiveScanner:
                         if err.lower() in r.text.lower():
                             self._report_vuln("SQL注入漏洞", f"表单参数 {param}", payload, target_url)
                             return
-                    if normal_len and abs(len(r.text) - normal_len) > 100:
-                        self._report_vuln("SQL注入漏洞(Blind)",
-                                          f"表单参数 {param} 响应长度异常", payload, target_url)
-                        return
+
+                    # 只有靶场环境才使用长度差异检测
+                    if is_target_hackerlab and normal_len:
+                        if abs(len(r.text) - normal_len) > LEN_DIFF_THRESHOLD_STRICT:
+                            self._report_vuln("SQL注入漏洞(Blind)",
+                                              f"表单参数 {param} 响应长度异常", payload, target_url)
+                            return
                 except Exception as e:
                     self.log(str(e))
 
-    # XSS 扫描
+    # XSS 扫描 - 双模式：普通网站用快速HTTP反射检测，靶场用完整Playwright检测
     def _scan_xss(self, url, forms, query_params):
+        is_target_hackerlab = self.is_hackerlab(url)
+
+        try:
+            # 靶场环境：完整Playwright检测
+            if is_target_hackerlab:
+                self._scan_xss_playwright(url, forms, query_params)
+                return
+
+            # 普通网站：先使用快速HTTP反射检测（不启动浏览器，不会超时）
+            # 如果HTTP检测发现可疑反射，再尝试Playwright验证
+            self.log("[*] XSS扫描(快速HTTP模式): 正在检测反射型XSS")
+
+            found_any = False
+
+            # 检测URL参数
+            if query_params:
+                if self._check_xss_get_http(url, list(query_params.keys())):
+                    found_any = True
+
+            # 检测表单
+            for form in forms:
+                if not self.running:
+                    break
+                if self._check_xss_form_http(url, form):
+                    found_any = True
+
+            if not found_any:
+                self.log("[+] XSS扫描完成: 未检测到反射型XSS")
+            else:
+                self.log("[+] XSS扫描完成: 发现潜在XSS注入点")
+
+        except Exception as e:
+            self.log(f"[-] XSS扫描异常: {e}")
+
+    def _check_xss_get_http(self, url, param_names):
+        """
+        快速HTTP反射检测：检查payload是否原样出现在响应中
+        """
+        parsed = urlparse(url)
+        found = False
+
+        for param in param_names:
+            if not self.running:
+                break
+            try:
+                for payload in XSS_PAYLOADS:
+                    if not self.running:
+                        break
+                    test_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param}={payload}"
+                    try:
+                        resp = self.session.get(test_url, timeout=5)
+                        # 检查payload是否原样出现在响应中（可能被转义）
+                        resp_text_lower = resp.text.lower()
+                        payload_lower = payload.lower()
+
+                        # 检查原始payload是否出现
+                        if payload_lower in resp_text_lower:
+                            test_url_log = test_url[:100] + ("..." if len(test_url) > 100 else "")
+                            self._report_vuln("XSS漏洞(疑似)", f"URL参数 {param} 发现payload反射",
+                                              payload, test_url_log)
+                            found = True
+                            break
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                self.log(f"[-] XSS GET HTTP检测异常: {e}")
+                continue
+
+        return found
+
+    def _check_xss_form_http(self, url, form):
+        """
+        快速HTTP反射检测：检查表单参数的payload反射
+        """
+        details = self._form_details(form)
+        target_url = build_target_url(url, details["action"])
+        found = False
+
+        for input_tag in details["inputs"]:
+            if not input_tag["name"] or not self.running:
+                continue
+            param = input_tag["name"]
+
+            for payload in XSS_PAYLOADS:
+                if not self.running:
+                    break
+                data = {param: payload}
+                try:
+                    if details["method"] == "post":
+                        resp = self.session.post(target_url, data=data, timeout=5)
+                    else:
+                        resp = self.session.get(target_url, params=data, timeout=5)
+
+                    resp_text_lower = resp.text.lower()
+                    payload_lower = payload.lower()
+
+                    if payload_lower in resp_text_lower:
+                        self._report_vuln("XSS漏洞(疑似)",
+                                          f"表单参数 {param} 发现payload反射",
+                                          payload, target_url)
+                        found = True
+                        break
+                except Exception:
+                    continue
+
+        return found
+
+    def _scan_xss_playwright(self, url, forms, query_params):
+        """
+        靶场用：完整Playwright检测，捕获alert对话框
+        """
         try:
             self.playwright = sync_playwright().start()
             self.browser = self.playwright.chromium.launch(headless=True)
@@ -296,9 +434,9 @@ class ActiveScanner:
 
             self.browser.close()
             self.playwright.stop()
-            self.log("[+] XSS 扫描完成")
+            self.log("[+] XSS扫描(Playwright模式)完成")
         except Exception as e:
-            self.log(f"[-] XSS 扫描失败: {e}")
+            self.log(f"[-] XSS扫描(Playwright)失败: {e}")
             if self.browser:
                 try:
                     self.browser.close()
