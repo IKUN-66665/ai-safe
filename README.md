@@ -222,11 +222,205 @@ ActiveScanner（主控）
 
 ---
 
+## 后续优化方向（Roadmap）
+
+### 1. Context-Aware XSS（上下文感知 XSS）
+
+当前 Payload Mutation 已支持多种编码与混淆策略，
+
+但尚未完全实现：
+
+**"基于上下文的 Payload 自适应生成"**。
+
+例如，以下两种场景属于完全不同的注入上下文：
+
+```html
+<!-- Attribute Context -->
+<input value="PAYLOAD">
+```
+
+```js
+// JavaScript String Context
+var a = "PAYLOAD"
+```
+
+需要采用不同的逃逸策略与 Payload。
+
+下一阶段计划实现：
+
+- HTML Context Detection
+- Attribute Context Escape
+- JavaScript String Breakout
+- URL Context Adaptation
+
+以提升现代 Web 环境中的 XSS 检测准确率。
+
+---
+
+### 2. JavaScript Sink 分析（DOM XSS）
+
+当前版本已支持 Endpoint Discovery，
+
+但尚未实现完整的 **Source → Sink 数据流分析**。
+
+下一阶段计划重点分析：
+
+- `innerHTML`
+- `eval`
+- `document.write`
+- `setTimeout`
+- `Function()`
+
+等危险 Sink，
+
+并结合用户可控输入进行 DOM XSS 检测。
+
+---
+
+### 3. Headless Browser 自动交互
+
+当前 Playwright 主要用于 Payload 验证。
+
+但现代 Web 应用大量依赖：
+
+- Route 切换
+- 动态渲染
+- Tab 交互
+- 登录状态
+- Lazy Load
+
+后续计划扩展为：
+
+**轻量级 Headless Browser Crawler**，
+
+支持：
+
+- 自动点击
+- 状态保持
+- 页面遍历
+- 动态内容发现
+
+---
+
+### 4. API 参数结构推断
+
+当前已支持 API Endpoint Discovery，
+
+但尚未支持：
+
+**自动推断参数结构与 JSON Schema**。
+
+后续计划增加：
+
+- 参数名提取
+- 类型推断
+- JSON 结构分析
+- GraphQL Schema 探测
+- Request Replay
+
+---
+
+## 技术难点与挑战
+
+### 1. 动态网站中的误报问题
+
+传统扫描器仅通过：
+
+```python
+len(response.text)
+```
+
+比较响应长度，
+
+在动态网站中误报率极高。
+
+为降低误报，项目实现了：
+
+- 三向响应比较（TRUE / FALSE / NORMAL）
+- DOM 结构差异分析
+- 状态码比较
+- 重定向差异分析
+- MIME 类型校验
+- 安全关键字变化检测
+
+用于提升 SQL 注入检测稳定性。
+
+---
+
+### 2. 时间盲注稳定性问题
+
+网络波动容易导致 **Time-Based SQL Injection** 出现误报。
+
+项目引入：
+
+- 多次采样
+- 基准均值建立
+- 标准差分析
+- Z-score 统计检验
+
+用于降低网络抖动带来的误判。
+
+---
+
+### 3. 上下文相关 XSS 检测
+
+现代 XSS Payload 强依赖注入上下文。
+
+项目会先检测 **Payload 在响应中的反射位置**，
+
+再根据：
+
+- HTML Context
+- Attribute Context
+- JavaScript Context
+- URL Context
+
+动态选择 Payload，
+
+而非使用固定 Payload 列表。
+
+---
+
+### 4. Payload 固定特征问题
+
+传统固定 Payload 容易被 WAF 规则识别。
+
+项目实现多维度 Mutation Engine：
+
+- 大小写混淆
+- 注释插入
+- Unicode 编码
+- URL 编码
+- Tag Mutation
+- Payload Split
+- 空格替换
+
+用于提升 Payload 多样性。
+
+---
+
+## 当前局限性（Limitations）
+
+当前版本仍存在以下限制，请在使用时注意：
+
+- 不适用于生产级渗透测试环境
+- 对高级 WAF/CDN 防护绕过能力有限
+- 尚未实现完整浏览器侧 Taint Tracking
+- 复杂认证流程支持有限
+- AI 分析结果仍可能存在误报
+- DOM-Based XSS 检测能力仍不完善
+- API Schema 推断能力仍在开发中
+- 未实现动态沙箱执行能力
+
+> **本项目仅用于安全研究、教学与授权测试环境。**
+
+---
+
 ## 更新日志
 
 ### 2026-06-17
 > **架构级升级 v2.0**
-- 重写扫描器为 8 大独立组件架构（详见 [upgrade_report.md](upgrade_report.md)）
+- 重写扫描器为 8 大独立组件架构（Crawler / CsrfHandler / RequestEngine / PayloadMutator / ParameterAnalyzer / ResponseDiffEngine / TimeBlindAnalyzer / Playwright Browser）
 - 新增：爬虫发现端点 / CSRF Token 自动处理 / JSON API 支持 / Payload 自动变异引擎 / 上下文感知 XSS / 统计方法时间盲注 / 响应 Diff Engine
 - 移除：所有 DVWA / 靶场相关硬编码逻辑，专注通用网站扫描
 - 修复：扫描完成后闪退问题（ScanWorker 兼容 + try/except 隔离）
