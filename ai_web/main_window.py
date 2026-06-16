@@ -39,31 +39,57 @@ class ScanWorker(QThread):
         self.url = url
 
     def run(self):
+        try:
+            def on_log(text):
+                try:
+                    self.log_signal.emit(str(text))
+                except Exception:
+                    pass
 
-        def on_log(text):
-            self.log_signal.emit(text)
-            print(text)
+            def on_vuln(vuln_dict):
+                try:
+                    # 兼容 dict 和 string 两种回调
+                    if isinstance(vuln_dict, dict):
+                        desc = f"{vuln_dict.get('type','')} | {vuln_dict.get('details','')} | payload={vuln_dict.get('payload','')}"
+                    else:
+                        desc = str(vuln_dict)
+                    self.vuln_signal.emit(desc)
+                    on_log(desc)
+                except Exception:
+                    pass
 
-        def on_vuln(text):
-            self.vuln_signal.emit(text)
-            on_log(text)
+            self.scanner.logger = on_log
+            # callback 接收 dict（report_vuln 传的是字符串）
+            self.scanner.callback = lambda s: on_vuln(s) if isinstance(s, (dict, str)) else None
 
-        self.scanner.logger = on_log
-        self.scanner.callback = on_vuln
+            # 同步扫描
+            self.scanner.current_url = self.url
+            self.scanner.found_vulns = []
+            self.scanner.scan_logs = []
+            self.scanner.running = True
 
-        # 再来一个同步扫描
-        self.scanner.current_url = self.url
-        self.scanner.found_vulns = []
-        self.scanner.scan_logs = []
-        self.scanner.running = True
+            # 直接调用 start_scan（内部含浏览器启动和完整流程）
+            self.scanner.start_scan(self.url)
 
-        if "dvwa" in self.url.lower():
-            self.scanner.login_dvwa()
-
-        self.scanner._scan(self.url)
-        self.scanner.running = False
-
-        self.done_signal.emit(self.scanner.get_results())
+            # 返回结果
+            try:
+                result = self.scanner.get_results()
+            except Exception:
+                result = {
+                    "url": self.url,
+                    "vuln_count": len(self.scanner.found_vulns),
+                    "vulnerabilities": self.scanner.found_vulns,
+                    "logs": self.scanner.scan_logs[-200:],
+                }
+            self.done_signal.emit(result)
+        except Exception as e:
+            self.log_signal.emit(f"[ERROR] 扫描线程异常: {e}")
+            self.done_signal.emit({
+                "url": self.url,
+                "vuln_count": 0,
+                "vulnerabilities": [],
+                "logs": [f"扫描异常: {e}"],
+            })
 
 
 # 小小检查一下你的ai启动没有嗷
@@ -148,7 +174,7 @@ class BrowserGUI(QWidget):
         #url一栏
         top = QHBoxLayout()
         self.url_bar = QLineEdit()
-        self.url_bar.setText("http://127.0.0.1/dvwa")
+        self.url_bar.setText("")
         self.visit_btn = QPushButton("访问")
         self.scan_btn = QPushButton("开始扫描")
         self.stop_btn = QPushButton("停止")
