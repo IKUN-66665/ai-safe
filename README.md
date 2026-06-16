@@ -131,3 +131,5 @@ For educational purposes only. Do not use as production security tool. AI analys
 ### 2026-06-12
 - 新增：文件安全检测模块，可以支持文件夹上传检测
 - 修复：文件安全检测模块新增白名单，可以降低误报率，web审计浏览器修复扫描普通网站时会出现超时的漏洞
+### 2026-06-17
+- 升级：原本的代码是只靠大量payload来检测，只有Error-based，Boolean-based和Time-based blind ，本人实测过很多次发现只能够对一些SQL拼接 没参数化 没过滤 没WAF的很老的网站才有效果，对现代网站完全没有效果，所以对代码全新升级：8大组件 + 爬虫 + Diff引擎 + Payload变异 + 上下文感知XSS + 统计时间盲注 + JSON API + CSRF自动处理可以更好应对现代网站
