@@ -224,101 +224,8 @@ ActiveScanner（主控）
 
 ## 后续优化方向（Roadmap）
 
-### 1. Context-Aware XSS（上下文感知 XSS）
+### 后续将重点完善现代 Web 场景的检测能力，包括：基于上下文的 XSS Payload 自适应生成、JavaScript Source→Sink 污点分析、Headless Browser 自动交互与 SPA 页面遍历、AST 级 JavaScript 解析替代正则匹配，以及 API 参数结构自动推断（JSON、GraphQL 等）。同时持续优化 Response Diff 算法与误报控制，提升复杂业务场景下的扫描准确率和自动化分析能力。
 
-当前 Payload Mutation 已支持多种编码与混淆策略，
-
-但尚未完全实现：
-
-**"基于上下文的 Payload 自适应生成"**。
-
-例如，以下两种场景属于完全不同的注入上下文：
-
-```html
-<!-- Attribute Context -->
-<input value="PAYLOAD">
-```
-
-```js
-// JavaScript String Context
-var a = "PAYLOAD"
-```
-
-需要采用不同的逃逸策略与 Payload。
-
-下一阶段计划实现：
-
-- HTML Context Detection
-- Attribute Context Escape
-- JavaScript String Breakout
-- URL Context Adaptation
-
-以提升现代 Web 环境中的 XSS 检测准确率。
-
----
-
-### 2. JavaScript Sink 分析（DOM XSS）
-
-当前版本已支持 Endpoint Discovery，
-
-但尚未实现完整的 **Source → Sink 数据流分析**。
-
-下一阶段计划重点分析：
-
-- `innerHTML`
-- `eval`
-- `document.write`
-- `setTimeout`
-- `Function()`
-
-等危险 Sink，
-
-并结合用户可控输入进行 DOM XSS 检测。
-
----
-
-### 3. Headless Browser 自动交互
-
-当前 Playwright 主要用于 Payload 验证。
-
-但现代 Web 应用大量依赖：
-
-- Route 切换
-- 动态渲染
-- Tab 交互
-- 登录状态
-- Lazy Load
-
-后续计划扩展为：
-
-**轻量级 Headless Browser Crawler**，
-
-支持：
-
-- 自动点击
-- 状态保持
-- 页面遍历
-- 动态内容发现
-
----
-
-### 4. API 参数结构推断
-
-当前已支持 API Endpoint Discovery，
-
-但尚未支持：
-
-**自动推断参数结构与 JSON Schema**。
-
-后续计划增加：
-
-- 参数名提取
-- 类型推断
-- JSON 结构分析
-- GraphQL Schema 探测
-- Request Replay
-
----
 
 ## 技术难点与挑战
 
@@ -437,6 +344,9 @@ len(response.text)
 ### 2026-06-07
 - 新增：Web 安全审计浏览器模块（内置浏览器 / 被动分析 / AI 报告）
 - 新增：杀毒模块新增 Fork 炸弹、删除系统文件、关闭防火墙等恶意规则检测
+
+### 2026-06-28
+- 升级：新增 Context-Aware XSS、ResponseDiffEngine、PayloadMutator、TimeBlindAnalyzer、JS Sink 分析、BrowserCrawler、API 参数发现等核心模块，优化误报控制、扫描稳定性与代码可维护性，进一步提升现代 Web 应用的漏洞检测能力。
 
 ---
 
